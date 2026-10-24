@@ -219,8 +219,8 @@ class DigUpService:
             ORDER BY s.id DESC LIMIT ?""", (int(samples),))
         if not rows:
             return {"checked": 0, "note": "the index has no document chunks to compare"}
-        prompts = [document_prompt(Path(path).stem, text) for _, path, text in rows]
-        vectors = self.embedder.embed_many(prompts)
+        # One passage per request, as queries are sent: a server's batching (padding) can't skew the check.
+        vectors = [self.embedder.embed_many([document_prompt(Path(path).stem, text)])[0] for _, path, text in rows]
         index_of = {int(s): i for i, s in enumerate(snapshot.row_segment)}
         cosines = []
         for (sid, _, _), vector in zip(rows, vectors):

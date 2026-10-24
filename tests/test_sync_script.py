@@ -11,8 +11,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from conftest import HOME, build_sample
+
 from hermes_digup.config import Settings
 from hermes_digup.index import IndexManager
 from hermes_digup.service import DigUpService
@@ -61,6 +61,7 @@ def machines(tmp_path, topics):
 
 def run(env, *args, **extra):
     return subprocess.run(["bash", str(SCRIPT), *args], env={**env, **extra}, capture_output=True, text=True,
+                          check=False,
                           timeout=60)
 
 
