@@ -76,6 +76,10 @@ def doctor(service: DigUpService) -> int:
         for result in health:
             if result["ok"]:
                 line(True, f"embedding server {result['url']} answered in {result['ms']} ms")
+                if result["model"] != s.embed_model:
+                    line(None, f"it has no model {s.embed_model!r}, so its {result['model']!r} is used. "
+                               f"Put DIGUP_EMBED_MODEL={result['model']} in {s.config_file or 'config.env'} "
+                               "to make that the setting")
             else:
                 line(False, f"embedding server {result['url']}: {result['error']}")
         if snapshot is not None and any(r["ok"] for r in health):

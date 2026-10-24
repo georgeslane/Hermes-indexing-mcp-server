@@ -32,6 +32,7 @@ the Pi on a schedule, and searches it there with the same ranking DigUp uses.
   - [5. Add it to Hermes](#5-add-it-to-hermes)
   - [6. Check it](#6-check-it)
 - [What Hermes can do with it](#what-hermes-can-do-with-it)
+- [Making Hermes search here first](#making-hermes-search-here-first)
 - [When something is down](#when-something-is-down)
 - [Settings](#settings)
 - [Troubleshooting](#troubleshooting)
@@ -164,8 +165,13 @@ On the Pi, with the values step 2 printed:
 
 ```sh
 deploy/pi/install.sh --embed-url http://mac-mini:8000,http://100.x.y.z:8000 \
-  --api-key <key from step 2> --model embeddinggemma-2
+  --api-key <key from step 2> --model <model name from step 2>
 ```
+
+oMLX names a model after its folder, so the name depends on how the model was downloaded: for example
+`embeddinggemma-2`, or `embeddinggemma-2-bf16` for a community bf16 copy. If the name is wrong anyway, the Pi asks
+oMLX for its model list and uses the EmbeddingGemma 2 it finds there (unquantized first). `doctor` then says which
+name it used.
 
 `DIGUP_EMBED_URL` takes several addresses, comma-separated, tried in order. Giving the MagicDNS name and the IP means
 a DNS hiccup doesn't stop meaning search.
@@ -178,7 +184,10 @@ The script:
   `~/.local/bin/hermes-digup`;
 - creates `~/.local/share/hermes-digup/index/`, where the laptop will put the index;
 - writes `~/.config/hermes-digup/config.env`. The MCP server and `hermes-digup doctor` both read this file, so the
-  agent and your shell always use the same settings.
+  agent and your shell always use the same settings;
+- installs the `digup-search` Hermes skill into `~/.hermes/skills/productivity/digup-search/` (see
+  [Making Hermes search here first](#making-hermes-search-here-first)). If the desktop app uses a profile other than
+  the default one, add `--profile NAME`.
 
 Make sure SSH is on, so the laptop can log in to copy files: `sudo raspi-config` → Interface Options → SSH.
 
@@ -298,6 +307,51 @@ Pictures, audio and video are found by meaning. DigUp keeps vectors for them, no
 them, except for screenshots, whose text DigUp reads on a Mac. Paths are paths on the laptop, which you can open from
 there.
 
+## Making Hermes search here first
+
+Out of the box Hermes can take a while to reach for these tools. It tends to search the Pi's own disk first with its
+built-in file tools, which can never find your Mac's files. Two things cause this:
+
+- **Tool Search.** Hermes's Tool Search is on by default. It keeps every MCP tool out of the model's tool list,
+  showing only a one-line preview of each, while its own file tools are always loaded.
+- **What the model knows.** Nothing tells the model that your files live on another machine.
+
+These settings fix both. They're in order of effect; the first two together are usually enough.
+
+**1. Pin the `digup-search` skill** (`deploy/pi/install.sh` installs it). Its full text then goes into the system
+prompt of every new chat. It tells the model that your files are on your Mac, to use the digup tools first and not
+search this machine's disk, and how to read a match before quoting it. In the Pi's `~/.hermes/config.yaml` (or the
+profile's), add:
+
+```yaml
+skills:
+  auto_load:
+    - digup-search
+```
+
+It costs about 1,000 tokens per chat. Without pinning, the skill still appears in Hermes's skill list and the model is
+told to load matching skills, so it helps either way; pinned, it's certain.
+
+**2. Tell Hermes to remember it.** Memory is also part of every chat's system prompt. In any chat, say:
+
+> Remember: my files are on my Mac, not on this machine. To find, read or summarise any of my files, use the digup
+> tools first, never the local filesystem or terminal.
+
+**3. Load the tools directly** (optional). If digup is your only MCP server, or you have just a few, turn Tool Search
+off so their full descriptions are always in front of the model:
+
+```yaml
+tools:
+  tool_search:
+    enabled: off
+```
+
+This loads every MCP server's tools into every chat, so skip it if you have large servers attached. Even with Tool
+Search on, each tool's preview starts by saying what it's for (for example, "Find the user's Mac files by content;
+use it first.").
+
+Changes apply to **new** chats: start one in the desktop app after editing.
+
 ## When something is down
 
 | Situation | What happens |
@@ -323,7 +377,7 @@ a different one.
 | `DIGUP_EMBED_URL` | (none) | Embedding server base URL(s), comma-separated, tried in order. Without one, only keyword search works. |
 | `DIGUP_EMBED_API_KEY` | (none) | Bearer token for the embedding server. |
 | `DIGUP_EMBED_API` | `openai` | `openai` for oMLX (and llama-server, LM Studio, or Ollama's `/v1`); `ollama` for Ollama's `/api/embed`. |
-| `DIGUP_EMBED_MODEL` | `embeddinggemma-2` | The model's name in oMLX, as the setup script printed it. |
+| `DIGUP_EMBED_MODEL` | `embeddinggemma-2` | The model's name in oMLX, as the setup script printed it. If the server has no model by that name, its EmbeddingGemma 2 is used, whatever it's called. |
 | `DIGUP_EMBED_TIMEOUT` | `15` | Seconds to wait for a vector once connected. |
 | `DIGUP_STALE_HOURS` | `36` | Age after which results mention that the index is old. |
 | `DIGUP_FLOAT32` | auto | `1` keeps vectors as float32 (about 4× faster scoring, twice the memory), `0` keeps float16. Auto picks float32 when it fits in a quarter of free memory. |
@@ -372,8 +426,10 @@ script again with `--expose`.
 `~/.config/hermes-digup/embedding-server.env`, or the sub key was deleted in oMLX. Re-running the setup script makes
 a new one.
 
-**HTTP 404 "no model".** `DIGUP_EMBED_MODEL` isn't the model's name in oMLX. The setup script prints the right name,
-and oMLX's Models page lists it too.
+**"no model 'embeddinggemma-2'" or "It has no EmbeddingGemma 2 model".** When `DIGUP_EMBED_MODEL` isn't the model's
+name in oMLX, the Pi uses the server's EmbeddingGemma 2 under its own name, and `doctor` shows a `[warn]` line with the
+setting to put in `config.env`. If oMLX has no EmbeddingGemma 2 at all, the error lists the models it has: run the
+setup script on Mac no.2 to download it.
 
 **Hermes doesn't show the tools.** Run `hermes mcp test digup`, check `~/.hermes/logs/mcp-stderr.log`, and make sure
 the `command:` path exists (`ls ~/.local/bin/hermes-digup`). Run `/reload-mcp` after changes.
@@ -427,7 +483,9 @@ server. They cover:
 - Ollama and API keys;
 - the vector comparison;
 - the sync script, against a local stand-in for the Pi;
-- the oMLX setup script, against a fake oMLX (its JavaScript JSON helper runs under Node instead of `osascript`).
+- the oMLX setup script, against a fake oMLX (its JavaScript JSON helper runs under Node instead of `osascript`);
+- the Hermes skill: Hermes's authoring rules, that it names exactly the server's tools, and that every tool's
+  preview fits Tool Search's 60 characters.
 
 Layout:
 
@@ -438,6 +496,8 @@ src/hermes_digup/
   textnorm.py  DigUp's query normalisation, stopwords and kind words (SearchText.swift)
   embed.py     EmbeddingGemma 2 client: DigUp's prompts, failover, cache
   service.py   the tools' logic; server.py exposes it over MCP; cli.py the shell commands
+hermes/skills/
+  digup-search/ the Hermes skill that makes the agent search the Mac's files here first
 deploy/
   mac-laptop/  digup-sync.sh + launchd installer (Mac no.1)
   mac-server/  oMLX setup for EmbeddingGemma 2, through its admin API (Mac no.2)
