@@ -32,6 +32,7 @@ the Pi on a schedule, and searches it there with the same ranking DigUp uses.
   - [5. Add it to Hermes](#5-add-it-to-hermes)
   - [6. Check it](#6-check-it)
 - [What Hermes can do with it](#what-hermes-can-do-with-it)
+- [Making Hermes search here first](#making-hermes-search-here-first)
 - [When something is down](#when-something-is-down)
 - [Settings](#settings)
 - [Troubleshooting](#troubleshooting)
@@ -183,7 +184,10 @@ The script:
   `~/.local/bin/hermes-digup`;
 - creates `~/.local/share/hermes-digup/index/`, where the laptop will put the index;
 - writes `~/.config/hermes-digup/config.env`. The MCP server and `hermes-digup doctor` both read this file, so the
-  agent and your shell always use the same settings.
+  agent and your shell always use the same settings;
+- installs the `digup-search` Hermes skill into `~/.hermes/skills/productivity/digup-search/` (see
+  [Making Hermes search here first](#making-hermes-search-here-first)). If the desktop app uses a profile other than
+  the default one, add `--profile NAME`.
 
 Make sure SSH is on, so the laptop can log in to copy files: `sudo raspi-config` → Interface Options → SSH.
 
@@ -302,6 +306,51 @@ Downloads"*.
 Pictures, audio and video are found by meaning. DigUp keeps vectors for them, not words, so `read_*` has no text for
 them, except for screenshots, whose text DigUp reads on a Mac. Paths are paths on the laptop, which you can open from
 there.
+
+## Making Hermes search here first
+
+Out of the box Hermes can take a while to reach for these tools. It tends to search the Pi's own disk first with its
+built-in file tools, which can never find your Mac's files. Two things cause this:
+
+- **Tool Search.** Hermes's Tool Search is on by default. It keeps every MCP tool out of the model's tool list,
+  showing only a one-line preview of each, while its own file tools are always loaded.
+- **What the model knows.** Nothing tells the model that your files live on another machine.
+
+These settings fix both. They're in order of effect; the first two together are usually enough.
+
+**1. Pin the `digup-search` skill** (`deploy/pi/install.sh` installs it). Its full text then goes into the system
+prompt of every new chat. It tells the model that your files are on your Mac, to use the digup tools first and not
+search this machine's disk, and how to read a match before quoting it. In the Pi's `~/.hermes/config.yaml` (or the
+profile's), add:
+
+```yaml
+skills:
+  auto_load:
+    - digup-search
+```
+
+It costs about 1,000 tokens per chat. Without pinning, the skill still appears in Hermes's skill list and the model is
+told to load matching skills, so it helps either way; pinned, it's certain.
+
+**2. Tell Hermes to remember it.** Memory is also part of every chat's system prompt. In any chat, say:
+
+> Remember: my files are on my Mac, not on this machine. To find, read or summarise any of my files, use the digup
+> tools first, never the local filesystem or terminal.
+
+**3. Load the tools directly** (optional). If digup is your only MCP server, or you have just a few, turn Tool Search
+off so their full descriptions are always in front of the model:
+
+```yaml
+tools:
+  tool_search:
+    enabled: off
+```
+
+This loads every MCP server's tools into every chat, so skip it if you have large servers attached. Even with Tool
+Search on, each tool's preview starts by saying what it's for (for example, "Find the user's Mac files by content;
+use it first.").
+
+Changes apply to **new** chats: start one in the desktop app after editing.
 
 ## When something is down
 
@@ -434,7 +483,9 @@ server. They cover:
 - Ollama and API keys;
 - the vector comparison;
 - the sync script, against a local stand-in for the Pi;
-- the oMLX setup script, against a fake oMLX (its JavaScript JSON helper runs under Node instead of `osascript`).
+- the oMLX setup script, against a fake oMLX (its JavaScript JSON helper runs under Node instead of `osascript`);
+- the Hermes skill: Hermes's authoring rules, that it names exactly the server's tools, and that every tool's
+  preview fits Tool Search's 60 characters.
 
 Layout:
 
@@ -445,6 +496,8 @@ src/hermes_digup/
   textnorm.py  DigUp's query normalisation, stopwords and kind words (SearchText.swift)
   embed.py     EmbeddingGemma 2 client: DigUp's prompts, failover, cache
   service.py   the tools' logic; server.py exposes it over MCP; cli.py the shell commands
+hermes/skills/
+  digup-search/ the Hermes skill that makes the agent search the Mac's files here first
 deploy/
   mac-laptop/  digup-sync.sh + launchd installer (Mac no.1)
   mac-server/  oMLX setup for EmbeddingGemma 2, through its admin API (Mac no.2)

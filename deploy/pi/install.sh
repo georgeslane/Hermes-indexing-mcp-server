@@ -1,11 +1,12 @@
 #!/bin/bash
 # Installs hermes-digup on the Raspberry Pi that runs Hermes Agent.
 #
-#   deploy/pi/install.sh [--embed-url http://mac-mini:8000] [--api-key KEY] [--model embeddinggemma-2]
+#   deploy/pi/install.sh [--embed-url http://mac-mini:8000] [--api-key KEY] [--model NAME] [--profile NAME]
 #
 # Puts the server in its own virtualenv (~/.local/share/hermes-digup/venv), links the command to
 # ~/.local/bin/hermes-digup, creates the folder the Mac syncs the index into, writes
-# ~/.config/hermes-digup/config.env, and prints the lines to add to Hermes.
+# ~/.config/hermes-digup/config.env, installs the digup-search skill into Hermes (the default profile, or
+# --profile NAME), and prints the lines to add to Hermes.
 
 set -euo pipefail
 
@@ -20,13 +21,15 @@ BIN="$HOME/.local/bin"
 EMBED_URL=""
 API_KEY=""
 MODEL=""
+PROFILE=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --embed-url) EMBED_URL="$2"; shift 2 ;;
     --api-key) API_KEY="$2"; shift 2 ;;
     --model) MODEL="$2"; shift 2 ;;
-    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+    --profile) PROFILE="$2"; shift 2 ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -87,13 +90,26 @@ else
   [ -n "$MODEL" ] && sed -i "s|^DIGUP_EMBED_MODEL=.*|DIGUP_EMBED_MODEL=$MODEL|" "$CONFIG"
 fi
 
+# The digup-search skill tells Hermes the user's files are on the Mac and to search them with these tools
+# first, instead of this machine's filesystem. Reinstalling replaces it with this repository's version.
+HERMES_DIR="${HERMES_HOME:-$HOME/.hermes}"
+if [ -n "$PROFILE" ]; then
+  HERMES_DIR="$HOME/.hermes/profiles/$PROFILE"
+  [ -d "$HERMES_DIR" ] || { echo "No Hermes profile '$PROFILE' (no $HERMES_DIR). See: hermes profile list" >&2; exit 1; }
+fi
+SKILL_DIR="$HERMES_DIR/skills/productivity/digup-search"
+mkdir -p "$SKILL_DIR"
+install -m 644 "$REPO/hermes/skills/digup-search/SKILL.md" "$SKILL_DIR/SKILL.md"
+P="${PROFILE:+-p $PROFILE }"
+
 cat <<EOF
 
 Installed: $BIN/hermes-digup ($("$BIN/hermes-digup" --version))
+Skill:     $SKILL_DIR/SKILL.md
 
 Add it to Hermes, either with
-  hermes mcp add digup --command $BIN/hermes-digup --args serve
-or in ~/.hermes/config.yaml:
+  hermes ${P}mcp add digup --command $BIN/hermes-digup --args serve
+or in $HERMES_DIR/config.yaml:
 
   mcp_servers:
     digup:
@@ -102,6 +118,13 @@ or in ~/.hermes/config.yaml:
       timeout: 60
       connect_timeout: 30
 
-then /reload-mcp in Hermes (a running gateway picks the change up by itself within a minute).
+To have Hermes reach for it first, pin the skill to every session in the same config.yaml
+(add it to the list if you already have one):
+
+  skills:
+    auto_load:
+      - digup-search
+
+Then start a new chat (a chat keeps the tools and skills it started with), or /reload-mcp.
 Check everything with:  hermes-digup doctor
 EOF
