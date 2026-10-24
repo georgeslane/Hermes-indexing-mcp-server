@@ -164,8 +164,13 @@ On the Pi, with the values step 2 printed:
 
 ```sh
 deploy/pi/install.sh --embed-url http://mac-mini:8000,http://100.x.y.z:8000 \
-  --api-key <key from step 2> --model embeddinggemma-2
+  --api-key <key from step 2> --model <model name from step 2>
 ```
+
+oMLX names a model after its folder, so the name depends on how the model was downloaded: for example
+`embeddinggemma-2`, or `embeddinggemma-2-bf16` for a community bf16 copy. If the name is wrong anyway, the Pi asks
+oMLX for its model list and uses the EmbeddingGemma 2 it finds there (unquantized first). `doctor` then says which
+name it used.
 
 `DIGUP_EMBED_URL` takes several addresses, comma-separated, tried in order. Giving the MagicDNS name and the IP means
 a DNS hiccup doesn't stop meaning search.
@@ -323,7 +328,7 @@ a different one.
 | `DIGUP_EMBED_URL` | (none) | Embedding server base URL(s), comma-separated, tried in order. Without one, only keyword search works. |
 | `DIGUP_EMBED_API_KEY` | (none) | Bearer token for the embedding server. |
 | `DIGUP_EMBED_API` | `openai` | `openai` for oMLX (and llama-server, LM Studio, or Ollama's `/v1`); `ollama` for Ollama's `/api/embed`. |
-| `DIGUP_EMBED_MODEL` | `embeddinggemma-2` | The model's name in oMLX, as the setup script printed it. |
+| `DIGUP_EMBED_MODEL` | `embeddinggemma-2` | The model's name in oMLX, as the setup script printed it. If the server has no model by that name, its EmbeddingGemma 2 is used, whatever it's called. |
 | `DIGUP_EMBED_TIMEOUT` | `15` | Seconds to wait for a vector once connected. |
 | `DIGUP_STALE_HOURS` | `36` | Age after which results mention that the index is old. |
 | `DIGUP_FLOAT32` | auto | `1` keeps vectors as float32 (about 4× faster scoring, twice the memory), `0` keeps float16. Auto picks float32 when it fits in a quarter of free memory. |
@@ -372,8 +377,10 @@ script again with `--expose`.
 `~/.config/hermes-digup/embedding-server.env`, or the sub key was deleted in oMLX. Re-running the setup script makes
 a new one.
 
-**HTTP 404 "no model".** `DIGUP_EMBED_MODEL` isn't the model's name in oMLX. The setup script prints the right name,
-and oMLX's Models page lists it too.
+**"no model 'embeddinggemma-2'" or "It has no EmbeddingGemma 2 model".** When `DIGUP_EMBED_MODEL` isn't the model's
+name in oMLX, the Pi uses the server's EmbeddingGemma 2 under its own name, and `doctor` shows a `[warn]` line with the
+setting to put in `config.env`. If oMLX has no EmbeddingGemma 2 at all, the error lists the models it has: run the
+setup script on Mac no.2 to download it.
 
 **Hermes doesn't show the tools.** Run `hermes mcp test digup`, check `~/.hermes/logs/mcp-stderr.log`, and make sure
 the `command:` path exists (`ls ~/.local/bin/hermes-digup`). Run `/reload-mcp` after changes.

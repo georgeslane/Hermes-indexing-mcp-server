@@ -238,3 +238,51 @@ def test_hanging_server_is_not_retried(index_dir):
         assert result["results"][0]["kind"] == "screenshot"
     finally:
         listener.close()
+
+
+# The names on the server from the first real oMLX run, where "embeddinggemma-2" got a 404.
+OMLX_MODELS = ["Qwen3.6-35B-A3B-MLX-4bit", "gemma-4-26B-A4B-it-QAT-MLX-4bit", "Qwen3.8-27B-OptiQ-4bit",
+               "Sage-A1.5-OptiQ-4bit", "embeddinggemma-2-bf16"]
+
+
+def test_finds_the_model_under_the_servers_name(index_dir, topics):
+    from conftest import FakeEmbeddingServer
+
+    server = FakeEmbeddingServer(lambda prompt: topics("pets"), models=OMLX_MODELS)
+    try:
+        service = service_for(index_dir, [server.url])  # DIGUP_EMBED_MODEL left at "embeddinggemma-2"
+        result = service.search("pets")
+        assert result["mode"] == "hybrid"
+        assert result["results"][0]["where"] == {"page": 5}
+        assert service.embedder.model_for(server.url) == "embeddinggemma-2-bf16"
+        # Remembered: the next query goes straight to the right name.
+        server.requests.clear()
+        service.search("something else")
+        assert [r["body"]["model"] for r in server.requests if r["body"]] == ["embeddinggemma-2-bf16"]
+        health = service.embedder.health()
+        assert health[0]["ok"] and health[0]["model"] == "embeddinggemma-2-bf16"
+    finally:
+        server.close()
+
+
+def test_server_without_embeddinggemma_2(index_dir, topics):
+    from conftest import FakeEmbeddingServer
+
+    server = FakeEmbeddingServer(lambda prompt: topics("pets"), models=OMLX_MODELS[:4] + ["embeddinggemma-300m"])
+    try:
+        service = service_for(index_dir, [server.url])
+        with pytest.raises(EmbeddingError, match="no EmbeddingGemma 2 model .*Qwen3.6"):
+            service.embedder.embed_query("x")
+        assert service.search("payment declined")["mode"] == "keywords only"
+    finally:
+        server.close()
+
+
+def test_pick_model_prefers_full_precision():
+    from hermes_digup.embed import pick_model
+
+    assert pick_model(["embeddinggemma-2-4bit", "embeddinggemma-2-bf16", "embeddinggemma-2-8bit"]) == \
+        "embeddinggemma-2-bf16"
+    assert pick_model(["EmbeddingGemma2-8bit"]) == "EmbeddingGemma2-8bit"
+    assert pick_model(["google/embeddinggemma-2", "embeddinggemma-2-oQ6"]) == "google/embeddinggemma-2"
+    assert pick_model(["embeddinggemma-300m", "gemma-4-26B"]) is None

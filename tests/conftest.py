@@ -139,17 +139,36 @@ def index_dir(tmp_path: Path, topics: Topics) -> Path:
 
 
 class FakeEmbeddingServer:
-    """Speaks the OpenAI and Ollama embedding APIs; maps prompts to vectors with `respond`."""
+    """Speaks the OpenAI and Ollama embedding APIs; maps prompts to vectors with `respond`.
+    With `models`, only those names embed (others get oMLX's 404) and they're listed."""
 
-    def __init__(self, respond, api_key: str | None = None):
+    def __init__(self, respond, api_key: str | None = None, models: list[str] | None = None):
         self.respond = respond
         self.api_key = api_key
+        self.models = models
         self.requests: list[dict] = []
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
                 pass
+
+            def _json(self, code, payload):
+                data = json.dumps(payload).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):
+                outer.requests.append({"path": self.path, "body": None})
+                names = outer.models or []
+                if self.path == "/v1/models":
+                    return self._json(200, {"object": "list", "data": [{"id": n} for n in names]})
+                if self.path == "/api/tags":
+                    return self._json(200, {"models": [{"name": n} for n in names]})
+                return self._json(404, {"error": "not found"})
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -159,6 +178,10 @@ class FakeEmbeddingServer:
                     self.end_headers()
                     self.wfile.write(b'{"error":"bad key"}')
                     return
+                if outer.models is not None and body.get("model") not in outer.models:
+                    return self._json(404, {"error": {"message": f"Model '{body.get('model')}' not found. "
+                                                      f"Available models: {', '.join(outer.models)}",
+                                                      "type": "not_found_error"}})
                 inputs = body["input"] if isinstance(body["input"], list) else [body["input"]]
                 vectors = [outer.respond(text).tolist() for text in inputs]
                 if self.path == "/api/embed":
