@@ -1,7 +1,7 @@
 #!/bin/bash
 # Installs hermes-digup on the Raspberry Pi that runs Hermes Agent.
 #
-#   deploy/pi/install.sh [--embed-url http://mac-mini:8088] [--api-key KEY]
+#   deploy/pi/install.sh [--embed-url http://mac-mini:8000] [--api-key KEY] [--model embeddinggemma-2]
 #
 # Puts the server in its own virtualenv (~/.local/share/hermes-digup/venv), links the command to
 # ~/.local/bin/hermes-digup, creates the folder the Mac syncs the index into, writes
@@ -19,11 +19,13 @@ CONFIG="$CONFIG_DIR/config.env"
 BIN="$HOME/.local/bin"
 EMBED_URL=""
 API_KEY=""
+MODEL=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --embed-url) EMBED_URL="$2"; shift 2 ;;
     --api-key) API_KEY="$2"; shift 2 ;;
+    --model) MODEL="$2"; shift 2 ;;
     -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -65,13 +67,14 @@ if [ ! -f "$CONFIG" ]; then
 # hermes-digup settings (read by the MCP server and by \`hermes-digup doctor\`).
 # Where the Mac's sync puts DigUp's index (PI_INDEX_DIR in the Mac's sync.env).
 DIGUP_INDEX_DIR=$INDEX_DIR
-# The always-on Mac's embedding server; several, comma-separated, are tried in order.
+# The always-on Mac's oMLX server; several, comma-separated, are tried in order.
 DIGUP_EMBED_URL=$EMBED_URL
-# The key setup-embedding-server.sh printed (empty if you used --no-api-key).
+# The oMLX sub key setup-embedding-server.sh printed.
 DIGUP_EMBED_API_KEY=$API_KEY
-# openai = llama-server / LM Studio / Ollama's /v1 API; ollama = Ollama's /api/embed.
+# openai = oMLX (and llama-server, LM Studio, Ollama's /v1); ollama = Ollama's /api/embed.
 DIGUP_EMBED_API=openai
-DIGUP_EMBED_MODEL=embeddinggemma-2
+# EmbeddingGemma 2's name in oMLX, as setup-embedding-server.sh printed it.
+DIGUP_EMBED_MODEL=${MODEL:-embeddinggemma-2}
 DIGUP_EMBED_TIMEOUT=15
 # Searches mention it when the index is older than this (the laptop was away or asleep).
 DIGUP_STALE_HOURS=36
@@ -81,6 +84,7 @@ else
   echo "Keeping existing $CONFIG"
   [ -n "$EMBED_URL" ] && sed -i "s|^DIGUP_EMBED_URL=.*|DIGUP_EMBED_URL=$EMBED_URL|" "$CONFIG"
   [ -n "$API_KEY" ] && sed -i "s|^DIGUP_EMBED_API_KEY=.*|DIGUP_EMBED_API_KEY=$API_KEY|" "$CONFIG"
+  [ -n "$MODEL" ] && sed -i "s|^DIGUP_EMBED_MODEL=.*|DIGUP_EMBED_MODEL=$MODEL|" "$CONFIG"
 fi
 
 cat <<EOF

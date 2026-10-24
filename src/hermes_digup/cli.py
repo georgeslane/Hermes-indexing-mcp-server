@@ -86,9 +86,9 @@ def doctor(service: DigUpService) -> int:
                     line(good, f"query vectors vs DigUp's: mean cosine {check['mean_cosine']} over "
                                f"{check['checked']} stored passages ({check['verdict']})")
                     if check["verdict"] != "match":
-                        print("       The server isn't making the same vectors DigUp made. Use ggml-org's "
-                              "embeddinggemma-2-Q8_0.gguf with llama-server --embedding --pooling mean "
-                              "(deploy/mac-server/setup-embedding-server.sh).")
+                        print("       The server isn't making the same vectors DigUp made. Serve Google's "
+                              "google/embeddinggemma-2 as it is (not a re-quantized copy) with oMLX: "
+                              "deploy/mac-server/setup-embedding-server.sh sets that up.")
                 else:
                     print(f"       ({check['note']}; skipped the vector comparison)")
             except EmbeddingError as error:

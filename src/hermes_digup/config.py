@@ -38,7 +38,7 @@ class Settings:
     index_dir: Path = DEFAULT_INDEX_DIR
     # One or more base URLs, tried in order (e.g. MagicDNS name, then the Tailscale IP).
     embed_urls: list[str] = field(default_factory=list)
-    embed_api: str = "openai"  # "openai" (llama-server, LM Studio, Ollama /v1) or "ollama" (/api/embed)
+    embed_api: str = "openai"  # "openai" (oMLX, llama-server, LM Studio, Ollama /v1) or "ollama" (/api/embed)
     embed_model: str = "embeddinggemma-2"
     embed_api_key: str = ""
     embed_timeout: float = 15.0

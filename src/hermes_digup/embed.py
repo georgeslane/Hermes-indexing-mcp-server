@@ -3,7 +3,8 @@
 Queries must be embedded exactly as DigUp embeds them, or they land in a different part of the
 vector space: the prompt "task: search result | query: ..." (code: "task: code retrieval | query:
 ..."), then L2-normalised. The server is anything that speaks the OpenAI embeddings API
-(llama-server, LM Studio, Ollama's /v1) or Ollama's own /api/embed.
+(oMLX, llama-server, LM Studio, Ollama's /v1) or Ollama's own /api/embed. None of them may add a
+prompt of its own: oMLX passes the text through as it is.
 
 Several base URLs can be given (MagicDNS name, Tailscale IP); they're tried in order. A server that
 fails is skipped for a while, so a sleeping or rebooting Mac costs one timeout, not one per search,
@@ -49,7 +50,7 @@ def _probe(base: str, timeout: float) -> None:
     port = parts.port or (443 if parts.scheme == "https" else 80)
     try:
         socket.create_connection((parts.hostname, port), timeout=timeout).close()
-    except socket.timeout as error:
+    except TimeoutError as error:
         raise ConnectionError(f"no connection within {timeout:g} s (asleep, or off the tailnet?)") from error
 
 
@@ -142,6 +143,10 @@ class Embedder:
             detail = error.read()[:300].decode(errors="replace")
             if error.code in (401, 403):
                 raise EmbeddingError(f"HTTP {error.code}: check DIGUP_EMBED_API_KEY ({detail})") from error
+            if error.code == 404:
+                raise EmbeddingError(f"HTTP 404: no model {s.embed_model!r} there? DIGUP_EMBED_MODEL must be the "
+                                     f"model's name on the server, as setup-embedding-server.sh printed it "
+                                     f"({detail})") from error
             if error.code >= 500 or error.code == 429:
                 raise ConnectionError(f"HTTP {error.code}: {detail}") from error
             raise EmbeddingError(f"HTTP {error.code}: {detail}") from error
@@ -160,8 +165,9 @@ class Embedder:
         vectors = []
         for values in raw:
             vector = np.asarray(values, dtype=np.float32)
-            if vector.ndim == 2:  # llama-server with --pooling none returns one vector per token
-                raise EmbeddingError("the server returned token vectors: start llama-server with --pooling mean")
+            if vector.ndim == 2:  # a server that doesn't pool returns one vector per token
+                raise EmbeddingError("the server returned one vector per token instead of one per text: "
+                                     "it isn't serving the model as an embedding model")
             if vector.shape != (DIMENSION,):
                 raise EmbeddingError(
                     f"the server's vectors have {vector.size} dimensions, DigUp's have {DIMENSION}: "

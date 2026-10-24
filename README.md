@@ -2,7 +2,8 @@
 
 An MCP server that lets your [Hermes Agent](https://github.com/NousResearch/hermes-agent) search the files on
 your Mac by what's in them. It reuses the index the [DigUp](https://github.com/ARahim3/DigUp) app already keeps,
-and gets query embeddings from EmbeddingGemma 2 running on a second, always-on Mac.
+and gets query embeddings from EmbeddingGemma 2, served by [oMLX](https://github.com/jundot/omlx) on a second,
+always-on Mac.
 
 Nothing is indexed twice. DigUp keeps indexing on your laptop the way it does now. This project copies its index to
 the Pi on a schedule, and searches it there with the same ranking DigUp uses.
@@ -10,11 +11,11 @@ the Pi on a schedule, and searches it there with the same ranking DigUp uses.
 ```
  Mac no.1 (laptop)                    Raspberry Pi                          Mac no.2 (always on)
  ┌──────────────────────┐            ┌───────────────────────────┐          ┌─────────────────────────┐
- │ DigUp app            │  rsync     │ Hermes Agent (gateway)    │  HTTP    │ llama-server            │
+ │ DigUp app            │  rsync     │ Hermes Agent (gateway)    │  HTTP    │ oMLX                    │
  │  └ index.sqlite ─────┼──over ────▶│  └ hermes-digup (MCP)     │──query──▶│  EmbeddingGemma 2       │
- │ digup-sync (launchd) │  SSH,      │     ├ index copy          │◀─vector──│  (DigUp's exact model   │
- │                      │  every     │     ├ meaning + keywords  │          │   file, mean pooling)   │
- │ Hermes desktop app ──┼── 15 min   │     └ tools for the agent │          │  launchd keeps it up    │
+ │ digup-sync (launchd) │  SSH,      │     ├ index copy          │◀─vector──│  (google's weights,     │
+ │                      │  every     │     ├ meaning + keywords  │          │   pinned in memory)     │
+ │ Hermes desktop app ──┼── 15 min   │     └ tools for the agent │          │  its own sub key        │
  │  (remote gateway) ───┼───────────▶│                           │          └─────────────────────────┘
  └──────────────────────┘ Tailscale  └───────────────────────────┘ Tailscale
 ```
@@ -68,18 +69,19 @@ DigUp's prompt (`task: search result | query: …`). The ranking is DigUp's own,
 - word matches add a bonus, which is why exact invoice numbers, names and error codes still work;
 - words that name a kind of file ("…in a video", "screenshot of…") give a small boost.
 
-**The embeddings.** Query vectors only make sense if they come from the same model DigUp used for the index. The
-setup script on Mac no.2 runs llama.cpp's `llama-server` with the exact file DigUp uses: ggml-org's
-`embeddinggemma-2-Q8_0.gguf` at DigUp's pinned revision, checksum-verified, with mean pooling. `hermes-digup doctor`
-proves the match: it re-embeds passages from your index and compares them with the vectors DigUp stored. A cosine of
-about 1.0 means the two are identical.
+**The embeddings.** Query vectors only make sense if they come from the same model DigUp used for the index. DigUp
+runs an 8-bit llama.cpp build of EmbeddingGemma 2, and it checked that build against mlx-vlm running Google's own
+weights (`google/embeddinggemma-2`): cosine 0.999 or better on text. oMLX loads EmbeddingGemma 2 through that same
+mlx-vlm, so the setup script on Mac no.2 serves Google's weights with your oMLX. oMLX adds no prompt of its own; the
+Pi adds DigUp's. `hermes-digup doctor` proves the match: it re-embeds passages from your index and compares them with
+the vectors DigUp stored. A cosine of about 1.0 means the two are identical.
 
 ## What you need
 
 | Machine | Needs |
 |---|---|
 | **Mac no.1** (laptop) | DigUp installed, with its first indexing pass done. Stock macOS tools only: bash, sqlite3, rsync, ssh. |
-| **Mac no.2** (server) | Apple Silicon, [Homebrew](https://brew.sh) (the script installs llama.cpp with it), about 350 MB free for the model. |
+| **Mac no.2** (server) | Apple Silicon, [oMLX](https://github.com/jundot/omlx) (the menu bar app or the Homebrew install) with a main API key set, about 1.5 GB free disk for the model and about 1 GB of memory to keep it loaded. |
 | **Raspberry Pi** | Hermes Agent, Raspberry Pi OS Bookworm or newer (Python 3.10+), rsync, and room for about two copies of the index (DigUp shows its size in Settings). A Pi 4 or 5 with 2 GB+ RAM. |
 | **All three** | [Tailscale](https://tailscale.com), on the same tailnet. |
 
@@ -92,8 +94,8 @@ cd hermes-indexing-mcp-server
 
 ## Setup
 
-Do the steps in this order: the Pi needs the embedding server's address and key from step 2, and the laptop needs
-the Pi set up before it can sync.
+Do the steps in this order: the Pi needs oMLX's address, key and model name from step 2, and the laptop needs the
+Pi set up before it can sync.
 
 ### 1. Tailscale names
 
@@ -108,40 +110,52 @@ If MagicDNS is off, use the `100.x.y.z` Tailscale IPs instead. Both work everywh
 
 ### 2. Mac no.2: the embedding server
 
-On the always-on Mac:
+oMLX needs a main API key before it can be reached from another machine. If you haven't set one, set it in the menu
+bar app (Settings → Security) or in the web admin at `http://127.0.0.1:8000/admin`. Then, on the always-on Mac:
 
 ```sh
-deploy/mac-server/setup-embedding-server.sh
+deploy/mac-server/setup-embedding-server.sh --expose
 ```
 
-The script:
+The script only uses oMLX's admin API, so your other models and settings stay as they are. It:
 
-- installs llama.cpp with Homebrew if `llama-server` isn't there, and checks that the build is new enough for
-  EmbeddingGemma 2;
-- reuses the model file if DigUp or the Hugging Face cache already has it on this Mac. Otherwise it downloads it
-  (310 MB, resumable) and checks DigUp's SHA-256;
-- creates an API key (saved in `~/.config/hermes-digup/embedding-server.env`) so that only machines with the key can
-  use the server;
-- installs the launchd job `com.hermes-digup.embeddings`, which starts at login and restarts the server if it ever
-  stops;
-- waits for the server, embeds a test sentence, and checks that the vector has 768 dimensions;
-- prints the `DIGUP_EMBED_URL` and `DIGUP_EMBED_API_KEY` lines for the Pi. Keep them for step 3.
+- finds your oMLX: its port and main key from `~/.omlx/settings.json` (or the folder the app uses), and starts it
+  if it isn't running;
+- with `--expose`, makes oMLX listen on the network (`0.0.0.0`) instead of only on this Mac, and restarts it. oMLX
+  then refuses every request that has no key. Leave `--expose` out if oMLX already listens on the network;
+- downloads `google/embeddinggemma-2` with oMLX's own downloader, unless oMLX already has it;
+- **pins** the model, so oMLX keeps it loaded (text only, about 0.9 GB) and never unloads it for being idle. The first
+  search after a quiet night is as quick as any other;
+- creates an oMLX **sub key** named `hermes-digup` for the Pi. A sub key can run models but can't change oMLX's
+  settings, and you can revoke it on its own. It's saved in `~/.config/hermes-digup/embedding-server.env`, and a
+  later run reuses it;
+- embeds a test query the way the Pi will, and checks that the vector has 768 dimensions;
+- prints the `DIGUP_EMBED_URL`, `DIGUP_EMBED_API_KEY` and `DIGUP_EMBED_MODEL` lines for the Pi. Keep them for step 3.
 
-Options: `--port 8088` (the default), `--host 100.x.y.z` to listen only on the Tailscale address (the default
-`0.0.0.0` listens on every network, protected by the key), `--no-api-key`, and `--uninstall`.
+Options:
+
+- `--admin-key KEY`: if the main key isn't in oMLX's settings file (for example, you set it with `OMLX_API_KEY`).
+- `--port 8000`: if the script can't tell which port oMLX uses.
+- `--hf-token TOKEN`: if Hugging Face asks you to accept the model's license first.
+- `--model-id NAME`: to use an EmbeddingGemma 2 that oMLX already has under another name.
+- `--uninstall`: deletes the Pi's sub key and unpins the model.
+
+Don't quantize EmbeddingGemma 2 with oQ for this. A re-quantized copy can drift away from DigUp's vectors; `doctor`
+would show it.
 
 Keep this Mac available:
 
 - **Never sleep:** System Settings → Energy → turn on "Prevent automatic sleeping when the display is off". Or run
   `sudo pmset -a sleep 0`.
-- **Logged in after a restart:** launchd agents run while you're logged in, so turn on automatic login (System
-  Settings → Users & Groups) if the Mac runs without a screen.
-- **Firewall:** if the macOS firewall is on, allow `llama-server` the first time macOS asks.
+- **oMLX after a restart:** the menu bar app starts its server at launch, so add oMLX to System Settings → General →
+  Login Items, and turn on automatic login (Users & Groups) if the Mac runs without a screen. With Homebrew,
+  `brew services start omlx` does the same. Both restart oMLX if it crashes.
+- **Firewall:** if the macOS firewall is on, allow oMLX the first time macOS asks.
 
-From the Pi, check that you can reach it, using your key:
+From the Pi, check that you can reach it:
 
 ```sh
-curl -s http://mac-mini:8088/health                       # {"status":"ok"}
+curl -s http://mac-mini:8000/health                       # {"status":"healthy",...}
 ```
 
 ### 3. The Pi: install the MCP server
@@ -149,7 +163,8 @@ curl -s http://mac-mini:8088/health                       # {"status":"ok"}
 On the Pi, with the values step 2 printed:
 
 ```sh
-deploy/pi/install.sh --embed-url http://mac-mini:8088,http://100.x.y.z:8088 --api-key <key from step 2>
+deploy/pi/install.sh --embed-url http://mac-mini:8000,http://100.x.y.z:8000 \
+  --api-key <key from step 2> --model embeddinggemma-2
 ```
 
 `DIGUP_EMBED_URL` takes several addresses, comma-separated, tried in order. Giving the MagicDNS name and the IP means
@@ -250,7 +265,7 @@ hermes-digup doctor
 [ok  ] index /home/pi/.local/share/hermes-digup/index/index.sqlite: 18342 files, 61877 vectors, schema 5
 [ok  ] last synced 0.2 hours ago
        vectors made by: google/embeddinggemma-2@bfcd298 llama.cpp-vectors1 text-q8_0+mmproj-q8_0
-[ok  ] embedding server http://mac-mini:8088 answered in 31 ms
+[ok  ] embedding server http://mac-mini:8000 answered in 38 ms
 [ok  ] query vectors vs DigUp's: mean cosine 0.9996 over 6 stored passages (match)
 all good
 ```
@@ -307,8 +322,8 @@ a different one.
 | `DIGUP_INDEX_DIR` | `~/.local/share/hermes-digup/index` | Folder holding `index.sqlite`, `code.sqlite` and `manifest.json`. |
 | `DIGUP_EMBED_URL` | (none) | Embedding server base URL(s), comma-separated, tried in order. Without one, only keyword search works. |
 | `DIGUP_EMBED_API_KEY` | (none) | Bearer token for the embedding server. |
-| `DIGUP_EMBED_API` | `openai` | `openai` for llama-server, LM Studio, or Ollama's `/v1`; `ollama` for Ollama's `/api/embed`. |
-| `DIGUP_EMBED_MODEL` | `embeddinggemma-2` | Model name sent to the server (llama-server ignores it; Ollama and LM Studio need theirs). |
+| `DIGUP_EMBED_API` | `openai` | `openai` for oMLX (and llama-server, LM Studio, or Ollama's `/v1`); `ollama` for Ollama's `/api/embed`. |
+| `DIGUP_EMBED_MODEL` | `embeddinggemma-2` | The model's name in oMLX, as the setup script printed it. |
 | `DIGUP_EMBED_TIMEOUT` | `15` | Seconds to wait for a vector once connected. |
 | `DIGUP_STALE_HOURS` | `36` | Age after which results mention that the index is old. |
 | `DIGUP_FLOAT32` | auto | `1` keeps vectors as float32 (about 4× faster scoring, twice the memory), `0` keeps float16. Auto picks float32 when it fits in a quarter of free memory. |
@@ -343,15 +358,22 @@ Tailscale is connected on both machines.
 macOS protects, such as Documents or Desktop. Give `/bin/bash` Full Disk Access (System Settings → Privacy &
 Security), or keep the index in its default place.
 
-**The comparison says "mismatch" (cosine well below 1).** The embedding server isn't making DigUp's vectors. Use
-`setup-embedding-server.sh`, which runs DigUp's exact model file with `--pooling mean`. Other runtimes (Ollama, LM
-Studio, other quantizations) may sit close but not on DigUp's vectors. Searches still work then, but rank worse.
+**The comparison says "mismatch" (cosine well below 1).** oMLX isn't making DigUp's vectors. Check that
+`DIGUP_EMBED_MODEL` names Google's `google/embeddinggemma-2` as oMLX downloaded it, not an oQ-quantized or
+community-converted copy. Re-running `setup-embedding-server.sh` sets this up. A "close" result (0.9 to 0.98) still
+searches, but ranks a little worse than DigUp.
 
-**Searches say "keywords only".** Mac no.2 didn't answer. On it, run `launchctl print gui/$(id -u)/com.hermes-digup.embeddings`
-and `tail ~/Library/Logs/hermes-digup-embeddings.log`. From the Pi, run `curl http://mac-mini:8088/health`.
+**Searches say "keywords only".** Mac no.2 didn't answer. Check that oMLX is running there (its menu bar icon, or
+`brew services info omlx`), and look at `~/.omlx/logs/server.log`. From the Pi, run
+`curl http://mac-mini:8000/health`. If it only answers on Mac no.2 itself, oMLX listens on 127.0.0.1: run the setup
+script again with `--expose`.
 
-**HTTP 401.** `DIGUP_EMBED_API_KEY` on the Pi doesn't match the key in Mac no.2's
-`~/.config/hermes-digup/embedding-server.env`.
+**HTTP 401.** `DIGUP_EMBED_API_KEY` on the Pi doesn't match the sub key in Mac no.2's
+`~/.config/hermes-digup/embedding-server.env`, or the sub key was deleted in oMLX. Re-running the setup script makes
+a new one.
+
+**HTTP 404 "no model".** `DIGUP_EMBED_MODEL` isn't the model's name in oMLX. The setup script prints the right name,
+and oMLX's Models page lists it too.
 
 **Hermes doesn't show the tools.** Run `hermes mcp test digup`, check `~/.hermes/logs/mcp-stderr.log`, and make sure
 the `command:` path exists (`ls ~/.local/bin/hermes-digup`). Run `/reload-mcp` after changes.
@@ -361,8 +383,10 @@ older: run `index_status`, or `hermes-digup status`, to see when it was last syn
 
 ## Other setups
 
-**Ollama or LM Studio on Mac no.2 instead of llama-server.** Set `DIGUP_EMBED_URL` to the server and
-`DIGUP_EMBED_MODEL` to its name for EmbeddingGemma 2. For Ollama, either set `DIGUP_EMBED_API=ollama` (its native
+**Ollama, LM Studio or llama.cpp on Mac no.2 instead of oMLX.** Set `DIGUP_EMBED_URL` to the server and
+`DIGUP_EMBED_MODEL` to its name for EmbeddingGemma 2. With llama.cpp, the closest match is the file DigUp itself
+runs: `ggml-org/embeddinggemma-2-GGUF`'s `embeddinggemma-2-Q8_0.gguf`, served by
+`llama-server --embedding --pooling mean -c 2048 -ub 2048`. For Ollama, either set `DIGUP_EMBED_API=ollama` (its native
 `/api/embed`) or keep `openai` with the URL ending in `/v1`. Then run `hermes-digup doctor` and look at the
 comparison line. Only a "match" means search will rank like DigUp.
 
@@ -381,8 +405,8 @@ under systemd) and use `url: "http://100.x.y.z:8765/mcp"` in Hermes's config ins
 - **Pi:** remove the `digup` entry from Hermes, then `rm -rf ~/.local/share/hermes-digup ~/.config/hermes-digup
   ~/.local/bin/hermes-digup`.
 - **Laptop:** `deploy/mac-laptop/install.sh --uninstall`.
-- **Mac no.2:** `deploy/mac-server/setup-embedding-server.sh --uninstall`, then delete
-  `~/Library/Application Support/hermes-digup` to remove the model.
+- **Mac no.2:** `deploy/mac-server/setup-embedding-server.sh --uninstall` deletes the Pi's sub key and unpins the
+  model. To free its disk space too, delete EmbeddingGemma 2 on oMLX's Models page.
 
 ## Development
 
@@ -401,7 +425,9 @@ server. They cover:
 - a live WAL-mode index;
 - failover, timeouts and the keyword fallback;
 - Ollama and API keys;
-- the vector comparison.
+- the vector comparison;
+- the sync script, against a local stand-in for the Pi;
+- the oMLX setup script, against a fake oMLX (its JavaScript JSON helper runs under Node instead of `osascript`).
 
 Layout:
 
@@ -414,7 +440,7 @@ src/hermes_digup/
   service.py   the tools' logic; server.py exposes it over MCP; cli.py the shell commands
 deploy/
   mac-laptop/  digup-sync.sh + launchd installer (Mac no.1)
-  mac-server/  llama-server + EmbeddingGemma 2 launchd installer (Mac no.2)
+  mac-server/  oMLX setup for EmbeddingGemma 2, through its admin API (Mac no.2)
   pi/          virtualenv installer and Hermes config (Raspberry Pi)
 ```
 
@@ -423,5 +449,5 @@ tells you when it sees one it doesn't know.
 
 ## License
 
-MIT. DigUp is MIT licensed, EmbeddingGemma 2 is Apache 2.0, and llama.cpp is MIT. This project isn't affiliated
-with DigUp, Google or Nous Research.
+MIT. DigUp is MIT licensed, EmbeddingGemma 2 is Apache 2.0, and oMLX is Apache 2.0. This project isn't affiliated
+with DigUp, oMLX, Google or Nous Research.
