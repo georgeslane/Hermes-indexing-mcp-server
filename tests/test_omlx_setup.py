@@ -120,7 +120,7 @@ class FakeOMLX:
                     else:
                         outer.sub_keys.remove(body["key"])
                     return self._send(200, {"success": True})
-                match = re.fullmatch(r"/models/([^/]+)/(settings|load)", route)
+                match = re.fullmatch(r"/models/([^/]+)/(settings|load|unload)", route)
                 if match:
                     model = next((m for m in outer.models if m["id"] == match.group(1)), None)
                     if model is None:
@@ -243,5 +243,23 @@ def test_needs_a_main_key(mac):
         assert result.returncode == 1 and "no main API key" in result.stderr
         wrong = run(env, "--admin-key", "nope")
         assert wrong.returncode == 1 and "refused the admin key" in wrong.stderr
+    finally:
+        server.close()
+
+
+def test_unpin_keeps_the_pis_key(mac):
+    """The Pi runs the model itself: --unpin frees the Mac's memory, and the Mac stays the fallback."""
+    home, env = mac
+    server = start(home, host="0.0.0.0")
+    try:
+        assert run(env).returncode == 0
+        assert server.gemma()["pinned"] is True and len(server.sub_keys) == 1
+        server.calls.clear()
+        unpinned = run(env, "--unpin")
+        assert unpinned.returncode == 0, unpinned.stdout + unpinned.stderr
+        assert server.gemma()["pinned"] is False
+        assert "POST /admin/api/models/embeddinggemma-2/unload" in server.calls
+        assert len(server.sub_keys) == 1                      # the Pi can still use the Mac as its fallback
+        assert (home / ".config/hermes-digup/embedding-server.env").exists()
     finally:
         server.close()
