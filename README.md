@@ -33,6 +33,7 @@ the Pi on a schedule, and searches it there with the same ranking DigUp uses.
   - [6. Check it](#6-check-it)
 - [What Hermes can do with it](#what-hermes-can-do-with-it)
 - [Making Hermes search here first](#making-hermes-search-here-first)
+- [Running the embeddings on the Pi instead](#running-the-embeddings-on-the-pi-instead)
 - [When something is down](#when-something-is-down)
 - [Settings](#settings)
 - [Troubleshooting](#troubleshooting)
@@ -437,6 +438,55 @@ the `command:` path exists (`ls ~/.local/bin/hermes-digup`). Run `/reload-mcp` a
 **A result is missing.** First check that DigUp itself finds it on the laptop. If it does, the Pi's copy is just
 older: run `index_status`, or `hermes-digup status`, to see when it was last synced.
 
+## Running the embeddings on the Pi instead
+
+The Pi only embeds search queries, so it can run EmbeddingGemma 2 itself and free the ~1 GB oMLX keeps loaded on Mac
+no.2. Your index doesn't change and nothing is re-indexed. The Pi runs the very file DigUp made the index with:
+`embeddinggemma-2-Q8_0.gguf` at DigUp's pinned revision, checksum-verified. It's run by the same llama.cpp release
+DigUp builds (b11461, with DigUp's one-line memory patch) and mean-pooled the same way. That's an even closer match to
+your index than oMLX's bf16 copy.
+
+On the Pi (a Pi 5, or a Pi 4 with 4 GB or more):
+
+```sh
+deploy/pi/setup-embedding-server.sh
+```
+
+The script:
+
+- installs `git`, `cmake` and a compiler with apt if they're missing;
+- downloads llama.cpp at b11461, checks it's the exact commit DigUp pins, applies DigUp's patch, and builds only
+  `llama-server`, optimized for this CPU. This happens once and takes about 10 to 20 minutes on a Pi 5;
+- downloads the text part of the model (310 MB, resumable) and checks DigUp's SHA-256;
+- runs it as the systemd user service `hermes-digup-embeddings`. It listens on `127.0.0.1:8088` only, so nothing else
+  on your network can reach it and it needs no key. systemd restarts it if it stops, and lingering is turned on so it
+  starts at boot;
+- embeds a test query and checks for a 768-dimension vector;
+- puts `http://127.0.0.1:8088` first in `DIGUP_EMBED_URL` and keeps the Mac's addresses after it, so the Mac is used
+  only if the Pi's server is down;
+- runs `hermes-digup doctor`. Its comparison line should say "match".
+
+Then:
+
+1. **Restart the MCP server** with `/reload-mcp` in Hermes, or restart Hermes. The MCP server reads `DIGUP_EMBED_URL`
+   when it starts.
+2. **Free the Mac's memory.** On Mac no.2, run `deploy/mac-server/setup-embedding-server.sh --unpin`. This unpins and
+   unloads EmbeddingGemma 2 but keeps the Pi's key, so the Mac still answers as the fallback. oMLX then loads the model
+   only if the Pi's server is down.
+
+What it costs the Pi:
+
+- **Memory:** about 0.5 GB while serving. The service also asks systemd to cap it at 1.5 GB, so it can't crowd out
+  Hermes, where your system enforces memory limits on user services (Raspberry Pi OS normally does).
+- **Speed:** a query is short, so expect well under a second on a Pi 5. The test query's time is printed at the end.
+  Repeated queries are cached anyway.
+
+Options: `--port`, `--threads` (all cores by default), and `--no-fallback` to drop the Mac from `DIGUP_EMBED_URL`.
+`--uninstall` stops the service and puts the Mac first again. After that, run the Mac's script without `--unpin` to pin
+the model there again.
+
+Check on it with `systemctl --user status hermes-digup-embeddings` and `journalctl --user -u hermes-digup-embeddings`.
+
 ## Other setups
 
 **Ollama, LM Studio or llama.cpp on Mac no.2 instead of oMLX.** Set `DIGUP_EMBED_URL` to the server and
@@ -483,6 +533,8 @@ server. They cover:
 - Ollama and API keys;
 - the vector comparison;
 - the sync script, against a local stand-in for the Pi;
+- the Pi's embedding-server script, with stand-ins for git, cmake, the download and systemd, and a fake
+  `llama-server` that systemd really starts;
 - the oMLX setup script, against a fake oMLX (its JavaScript JSON helper runs under Node instead of `osascript`);
 - the Hermes skill: Hermes's authoring rules, that it names exactly the server's tools, and that every tool's
   preview fits Tool Search's 60 characters.
@@ -501,7 +553,7 @@ hermes/skills/
 deploy/
   mac-laptop/  digup-sync.sh + launchd installer (Mac no.1)
   mac-server/  oMLX setup for EmbeddingGemma 2, through its admin API (Mac no.2)
-  pi/          virtualenv installer and Hermes config (Raspberry Pi)
+  pi/          virtualenv installer and Hermes config, and the optional on-Pi embedding server (Raspberry Pi)
 ```
 
 DigUp's index format isn't a public API, so a DigUp update could change it. The reader checks the schema version and

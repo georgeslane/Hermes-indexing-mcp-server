@@ -12,6 +12,7 @@
 #   5. checks that a test query comes back as a 768-dimension vector, and prints the Pi's settings.
 #
 #   deploy/mac-server/setup-embedding-server.sh [--expose] [--admin-key KEY] [--port 8000] [--hf-token TOKEN]
+#   deploy/mac-server/setup-embedding-server.sh --unpin          # the Pi runs the model now: free this Mac's memory
 #   deploy/mac-server/setup-embedding-server.sh --uninstall      # delete the Pi's sub key and unpin the model
 #
 # --expose   oMLX listens only on this Mac by default (127.0.0.1). This sets its host to 0.0.0.0 so the Pi can
@@ -25,6 +26,7 @@ CONFIG_DIR="$HOME/.config/hermes-digup"
 KEY_FILE="$CONFIG_DIR/embedding-server.env"
 EXPOSE=0
 UNINSTALL=0
+UNPIN=0
 PORT=""
 ADMIN_KEY="${OMLX_API_KEY:-}"
 HF_TOKEN="${HF_TOKEN:-}"
@@ -38,7 +40,8 @@ while [ $# -gt 0 ]; do
     --hf-token) HF_TOKEN="$2"; shift 2 ;;
     --model-id) MODEL_ID="$2"; shift 2 ;;
     --uninstall) UNINSTALL=1; shift ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    --unpin) UNPIN=1; shift ;;
+    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -149,6 +152,39 @@ api() {
 api GET /admin/api/server-info || die "oMLX refused the admin key: $BODY
 Pass the main API key with --admin-key (sub keys can't use the admin API)."
 
+# EmbeddingGemma 2's name in oMLX. find_model reads the model list in $BODY.
+find_model() {
+  local model id
+  while IFS= read -r model; do
+    [ -n "$model" ] || continue
+    [ "$(json_get "$model" model_type)" = embedding ] || continue
+    id="$(json_get "$model" id)"
+    if printf '%s %s' "$id" "$(json_get "$model" source_repo_id)" | grep -qi 'embeddinggemma-\?2'; then
+      echo "$id"
+      return 0
+    fi
+  done <<< "$(json_get "$BODY" 'models.*')"
+  return 1
+}
+
+# --unpin: the Pi runs EmbeddingGemma 2 itself now (deploy/pi/setup-embedding-server.sh). Free this Mac's memory, but
+# keep the model and the Pi's key, so this Mac still answers as the fallback (oMLX loads the model again if it's used).
+if [ "$UNPIN" = 1 ]; then
+  if [ -z "$MODEL_ID" ] && [ -f "$KEY_FILE" ]; then
+    MODEL_ID="$(sed -n 's/^DIGUP_EMBED_MODEL=//p' "$KEY_FILE")"
+  fi
+  if [ -z "$MODEL_ID" ]; then
+    api GET /admin/api/models || die "couldn't list oMLX's models: $BODY"
+    MODEL_ID="$(find_model || true)"
+  fi
+  [ -n "$MODEL_ID" ] || die "oMLX has no EmbeddingGemma 2 model; nothing to unpin."
+  api PUT "/admin/api/models/$MODEL_ID/settings" '{"is_pinned": false}' || die "couldn't unpin $MODEL_ID: $BODY"
+  api POST "/admin/api/models/$MODEL_ID/unload" || echo "note: $MODEL_ID wasn't loaded ($BODY)"
+  echo "Unpinned and unloaded $MODEL_ID. The Pi's key still works, so this Mac stays the fallback."
+  echo "To keep it loaded here again, run this script without --unpin."
+  exit 0
+fi
+
 # --uninstall: take the Pi's key away and unpin the model (the model itself stays, delete it in oMLX).
 if [ "$UNINSTALL" = 1 ]; then
   if [ -f "$KEY_FILE" ]; then
@@ -181,20 +217,7 @@ or set the server host to 0.0.0.0 in oMLX's settings and restart it."
   fi
 fi
 
-# 3. EmbeddingGemma 2 in oMLX's model folder. find_model reads the model list in $BODY.
-find_model() {
-  local model id
-  while IFS= read -r model; do
-    [ -n "$model" ] || continue
-    [ "$(json_get "$model" model_type)" = embedding ] || continue
-    id="$(json_get "$model" id)"
-    if printf '%s %s' "$id" "$(json_get "$model" source_repo_id)" | grep -qi 'embeddinggemma-\?2'; then
-      echo "$id"
-      return 0
-    fi
-  done <<< "$(json_get "$BODY" 'models.*')"
-  return 1
-}
+# 3. EmbeddingGemma 2 in oMLX's model folder.
 if [ -z "$MODEL_ID" ]; then
   api GET /admin/api/models || die "couldn't list oMLX's models: $BODY"
   MODEL_ID="$(find_model || true)"
